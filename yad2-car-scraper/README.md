@@ -18,6 +18,6 @@ A Python script to scrape used car listings from Yad2.co.il based on manufacture
 ```bash
 git clone [your-repo-url]
 cd yad2-car-scraper
-python -m venv venv
-source venv/bin/activate  # or .\venv\Scripts\activate on Windows
+python -m venv .venv
+source .venv/bin/activate  # or .\.venv\Scripts\activate on Windows
 pip install -r requirements.txt
