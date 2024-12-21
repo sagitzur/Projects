@@ -2,6 +2,9 @@ import requests
 import pandas as pd
 import json
 import openpyxl
+from flask import Flask, render_template_string
+
+app = Flask(__name__)
 
 class Yad2CarScraper:
     def __init__(self, base_url, params):
@@ -120,6 +123,160 @@ class Yad2CarScraper:
 
         print(f"Data has been saved to '{filename}'.")
 
+@app.route('/')
+def display_data():
+    df = pd.read_excel('yad2_vehicles.xlsx')
+    return render_template_string("""
+    <html>
+        <head>
+            <title>Yad2 Vehicles Data</title>
+            <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+            <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.10.21/css/jquery.dataTables.css">
+            <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
+            <script src="https://cdn.datatables.net/1.10.21/js/jquery.dataTables.js"></script>
+            <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+            <script>
+                $(document).ready(function() {
+                    // Setup - add a text input to each footer cell
+                    $('#data-table tfoot th').each(function() {
+                        var title = $(this).text();
+                        $(this).html('<input type="text" placeholder="Search ' + title + '" />');
+                    });
+
+                    var table = $('#data-table').DataTable({
+                        footerCallback: function(row, data, start, end, display) {
+                            // Apply the search
+                            this.api().columns().every(function() {
+                                var that = this;
+                                $('input', this.footer()).on('keyup change clear', function() {
+                                    if (that.search() !== this.value) {
+                                        that.search(this.value).draw();
+                                    }
+                                });
+                            });
+                        },
+                        drawCallback: function(settings) {
+                            // Apply conditional formatting
+                            $('#data-table tbody tr').each(function() {
+                                var price = parseInt($(this).find('td:eq(7)').text().replace(' ₪', '').replace(',', ''));
+                                if (price > 150000) {
+                                    $(this).find('td:eq(7)').css('background-color', '#FF0000');
+                                } else if (price > 100000) {
+                                    $(this).find('td:eq(7)').css('background-color', '#FFFF00');
+                                } else {
+                                    $(this).find('td:eq(7)').css('background-color', '#00FF00');
+                                }
+
+                                var kilometers = parseInt($(this).find('td:eq(6)').text().replace(',', ''));
+                                if (kilometers > 50000) {
+                                    $(this).find('td:eq(6)').css('background-color', '#FF0000');
+                                } else if (kilometers > 20000) {
+                                    $(this).find('td:eq(6)').css('background-color', '#FFFF00');
+                                } else {
+                                    $(this).find('td:eq(6)').css('background-color', '#00FF00');
+                                }
+                            });
+
+                            // Initialize tooltips
+                            $('[data-toggle="tooltip"]').tooltip();
+
+                            // Initialize modals
+                            $('.info-text, .search-text').on('click', function() {
+                                var content = $(this).data('content');
+                                $('#modalContent').text(content);
+                                $('#infoModal').modal('show');
+                            });
+                        }
+                    });
+                });
+            </script>
+            <style>
+                tfoot input {
+                    width: 100%;
+                    padding: 3px;
+                    box-sizing: border-box;
+                }
+                .dataTables_wrapper .dataTables_filter {
+                    float: right;
+                    text-align: right;
+                }
+                .dataTables_wrapper .dataTables_length {
+                    float: left;
+                }
+                .dataTables_wrapper .dataTables_info {
+                    float: left;
+                }
+                .dataTables_wrapper .dataTables_paginate {
+                    float: right;
+                }
+                .info-text, .search-text {
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    max-width: 150px;
+                    cursor: pointer;
+                }
+                .info-text::after, .search-text::after {
+                    content: '...';
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1 class="my-4">Yad2 Vehicles Data</h1>
+                <table id="data-table" class="display table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            {% for column in df.columns %}
+                            <th>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tfoot>
+                        <tr>
+                            {% for column in df.columns %}
+                            <th>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </tfoot>
+                    <tbody>
+                        {% for row in df.iterrows() %}
+                        <tr>
+                            {% for cell, column in zip(row[1], df.columns) %}
+                            {% if column in ['info_text', 'search_text'] %}
+                            <td class="{{ column }}" data-toggle="tooltip" title="{{ cell }}" data-content="{{ cell }}">...</td>
+                            {% else %}
+                            <td>{{ cell }}</td>
+                            {% endif %}
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Modal -->
+            <div class="modal fade" id="infoModal" tabindex="-1" role="dialog" aria-labelledby="infoModalLabel" aria-hidden="true">
+                <div class="modal-dialog" role="document">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="infoModalLabel">Details</h5>
+                            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                <span aria-hidden="true">&times;</span>
+                            </button>
+                        </div>
+                        <div class="modal-body" id="modalContent">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </body>
+    </html>
+    """, df=df, zip=zip)
+
 if __name__ == "__main__":
     base_url = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars"
     params = {
@@ -136,5 +293,5 @@ if __name__ == "__main__":
     scraper.scrape()
     scraper.save_to_json("yad2_vehicles.json")
     scraper.save_to_excel("yad2_vehicles.xlsx")
+    app.run(debug=True)
 
-# Save the JSON data to a file
