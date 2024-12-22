@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import openpyxl
 from flask import Flask, render_template_string
+import logging
 
 app = Flask(__name__)
 
@@ -76,7 +77,8 @@ class Yad2CarScraper:
             "date": item.get("date", ""),
             "date_added": item.get("date_added", ""),
             "OwnerID_text": item.get("OwnerID_text", ""),
-            "pricelist_link_url": item.get("pricelist_link_url", "")
+            "pricelist_link_url": item.get("pricelist_link_url", ""),
+            "images_urls": item.get("images_urls", []) if isinstance(item.get("images_urls"), list) else []
             }
             # Extract more_details
             more_details = item.get("more_details", [])
@@ -98,7 +100,9 @@ class Yad2CarScraper:
         df["kilometers"] = df["kilometers"].apply(lambda x: int(str(x).replace(',', '')))
         df["price"] = df["price"].apply(lambda x: int(str(x).replace(',', '').replace(' ₪', '')) if str(x).replace(',', '').replace(' ₪', '').isdigit() else "N/A")
         df["year"] = df["year"].apply(lambda x: int(x) if str(x).isdigit() else 0)
-
+        df["images_urls"] = df["images_urls"].apply(
+        lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else '[]'
+    )
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
             df.drop_duplicates(inplace=True)
             df.to_excel(writer, index=False)
@@ -126,6 +130,30 @@ class Yad2CarScraper:
 @app.route('/')
 def display_data():
     df = pd.read_excel('yad2_vehicles.xlsx')
+    # Parse JSON strings in images_urls column
+    # Clean and parse images_urls
+    def clean_urls(x):
+        try:
+            if isinstance(x, str):
+                # Parse JSON string from Excel
+                urls = json.loads(x)
+                # Ensure it's a list
+                if isinstance(urls, list):
+                    return urls
+            return []
+        except:
+            print(f"Error parsing URLs: {x}")
+            return []
+    from html import escape
+    #df['images_urls'] = df['images_urls'].apply(clean_urls)
+    df['images_urls'] = df['images_urls'].apply(
+        lambda urls: escape(json.dumps(urls)) if isinstance(urls, list) else urls
+    )
+
+
+    # Add debug logging
+    app.logger.debug(f"First row images_urls: {df['images_urls'].iloc[1]}")
+    
     return render_template_string("""
     <html>
         <head>
@@ -134,6 +162,7 @@ def display_data():
             <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.10.21/css/jquery.dataTables.css">
             <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
             <script src="https://cdn.datatables.net/1.10.21/js/jquery.dataTables.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
             <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
             <script>
                 $(document).ready(function() {
@@ -186,6 +215,38 @@ def display_data():
                                 $('#modalContent').text(content);
                                 $('#infoModal').modal('show');
                             });
+                            
+                            $('.image-urls').on('click', function() {
+    var imagesData = $(this).attr('data-images');
+    var imagesData = $(this).attr('data-images');
+    console.log('Raw data-images:', imagesData); // Debugging step
+                                  
+    try {
+        var images = JSON.parse(imagesData);
+        console.log('Parsed images:', images);
+        
+        if (!Array.isArray(images)) {
+            console.error('Not an array:', images);
+            return;
+        }
+        
+        var modalBody = $('#imageModal .modal-body');
+        modalBody.empty();
+        
+        images.forEach(function(url) {
+            modalBody.append(`
+                <div class="mb-3">
+                    <img src="${url}" class="img-fluid" />
+                </div>
+            `);
+        });
+        
+        $('#imageModal').modal('show');
+    } catch (e) {
+        console.error('JSON parse error:', e);
+    }
+});
+                        
                         }
                     });
                 });
@@ -243,7 +304,10 @@ def display_data():
                         {% for row in df.iterrows() %}
                         <tr>
                             {% for cell, column in zip(row[1], df.columns) %}
-                            {% if column in ['info_text', 'search_text'] %}
+                            {% if column == 'images_urls' %}
+                            <td class="image-urls" data-images="{{ cell }}" style="cursor: pointer;">
+    View Images)</td>
+                                  {% elif column in ['info_text', 'search_text'] %}
                             <td class="{{ column }}" data-toggle="tooltip" title="{{ cell }}" data-content="{{ cell }}">...</td>
                             {% else %}
                             <td>{{ cell }}</td>
@@ -273,6 +337,25 @@ def display_data():
                     </div>
                 </div>
             </div>
+                                  
+            <!-- Modal for images -->
+            <div class="modal fade" id="imageModal" tabindex="-1" role="dialog" aria-labelledby="imageModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg" role="document">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="imageModalLabel">Images</h5>
+                            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                <span aria-hidden="true">&times;</span>
+                            </button>
+                        </div>
+                        <div class="modal-body">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </body>
     </html>
     """, df=df, zip=zip)
@@ -293,5 +376,8 @@ if __name__ == "__main__":
     scraper.scrape()
     scraper.save_to_json("yad2_vehicles.json")
     scraper.save_to_excel("yad2_vehicles.xlsx")
+    app.logger.setLevel(logging.DEBUG)
     app.run(debug=True)
 
+    
+# Save the JSON data to a file
