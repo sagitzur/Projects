@@ -2,10 +2,17 @@ import requests
 import pandas as pd
 import json
 import openpyxl
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request
 import logging
 
 app = Flask(__name__)
+
+# Dictionary to store manufacturer and model information
+manufacturers_models = {
+    "Hyundai": {"manufacturer": 21, "model": 10291},
+    "KIA": {"manufacturer": 48, "model": 10720},
+    "Toyota": {"manufacturer": 19, "model": 10238}
+}
 
 class Yad2CarScraper:
     def __init__(self, base_url, params):
@@ -15,6 +22,7 @@ class Yad2CarScraper:
 
     def fetch_page(self, page_number):
         self.params["page"] = page_number
+
         response = requests.get(self.base_url, params=self.params)
         if response.status_code == 200:
             return response.json()
@@ -23,6 +31,7 @@ class Yad2CarScraper:
             return None
 
     def scrape(self):
+        self.all_items = []  # Clear previous items
         data = self.fetch_page(1)
         if data:
             data_page = data['data']
@@ -60,58 +69,48 @@ class Yad2CarScraper:
         filtered_items = []
         for item in self.all_items:
             filtered_item = {
-            #"line_1": item.get("line_1", ""),
-            "company": item.get("line_2", "טרייד מוביל"),
-            #"line_3": item.get("line_3", None),
-            "city": item.get("city", ""),
-            "model": item.get("row_1",""),
-            "submodel": item.get("row_2", ""),
-            #"row_3": item.get("row_3", [2022, "יד ראשונה", "ק״מ 37,700"]),
-            "year": item.get("year", 0),
-            "hand": item.get("Hand_text", ""),
-            "kilometers": item.get("kilometers", 0),
-            "price": item.get("price", 0),
-            "contact_name": item.get("contact_name", ""),
-            "info_text": item.get("info_text", ""),
-            "search_text": item.get("search_text", ""),
-            "date": item.get("date", ""),
-            "date_added": item.get("date_added", ""),
-            "OwnerID_text": item.get("OwnerID_text", ""),
-            "pricelist_link_url": item.get("pricelist_link_url", ""),
-            "images_urls": item.get("images_urls", []) if isinstance(item.get("images_urls"), list) else []
+                "company": item.get("line_2", "טרייד מוביל"),
+                "city": item.get("city", ""),
+                "model": item.get("row_1",""),
+                "submodel": item.get("row_2", ""),
+                "year": item.get("year", 0),
+                "hand": item.get("Hand_text", ""),
+                "kilometers": item.get("kilometers", 0),
+                "price": item.get("price", 0),
+                "contact_name": item.get("contact_name", ""),
+                "info_text": item.get("info_text", ""),
+                "search_text": item.get("search_text", ""),
+                "date": item.get("date", ""),
+                "date_added": item.get("date_added", ""),
+                "OwnerID_text": item.get("OwnerID_text", ""),
+                "pricelist_link_url": item.get("pricelist_link_url", ""),
+                "images_urls": item.get("images_urls", []) if isinstance(item.get("images_urls"), list) else []
             }
-            # Extract more_details
             more_details = item.get("more_details", [])
             for detail in more_details:
-                #if detail["name"] == "kilometers":
-                #    filtered_item["kilometers"] = detail["value"]
-                #elif detail["name"] == "engineType":
-                #    filtered_item["engineType"] = detail["value"]
-                #elif detail["name"] == "gearBox":
-                #    filtered_item["gearBox"] = detail["value"]
-                #elif detail["name"] == "color":
-                #    filtered_item["color"] = detail["value"]
-                #elif detail["name"] == "month":
                 if detail["name"] == "month":
                     filtered_item["Start Month"] = detail["value"]
 
             filtered_items.append(filtered_item)
         df = pd.DataFrame(filtered_items)
+        #print(df.head())
         df["kilometers"] = df["kilometers"].apply(lambda x: int(str(x).replace(',', '')))
         df["price"] = df["price"].apply(lambda x: int(str(x).replace(',', '').replace(' ₪', '')) if str(x).replace(',', '').replace(' ₪', '').isdigit() else "N/A")
         df["year"] = df["year"].apply(lambda x: int(x) if str(x).isdigit() else 0)
         df["images_urls"] = df["images_urls"].apply(
-        lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else '[]'
-    )
+            lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else '[]'
+        )
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
             df.drop_duplicates(inplace=True)
+            df.dropna(subset=['model', 'submodel', 'city'], inplace=True)
+            df = df[df['model'].str.strip() != '']
+            df = df[df['submodel'].str.strip() != '']
+            df = df[df['city'].str.strip() != '']
             df.to_excel(writer, index=False)
             worksheet = writer.sheets['Sheet1']
 
-            # Add autofilter to header
             worksheet.auto_filter.ref = worksheet.dimensions
 
-            # Define a function to apply conditional formatting
             def apply_conditional_formatting(column, start_color, mid_color, end_color):
                 color_scale = openpyxl.formatting.rule.ColorScaleRule(
                     start_type='min', start_color=start_color,
@@ -120,40 +119,36 @@ class Yad2CarScraper:
                 )
                 worksheet.conditional_formatting.add(f'{column}2:{column}{len(df) + 1}', color_scale)
 
-            # Apply conditional formatting for kilometers, price, and year
             apply_conditional_formatting('G', '00FF00', 'FFFF00', 'FF0000')
             apply_conditional_formatting('H', 'FF0000', 'FFFF00', '00FF00')
             apply_conditional_formatting('F', 'FF0000', 'FFFF00', '00FF00')
 
         print(f"Data has been saved to '{filename}'.")
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 def display_data():
+    selected_manufacturer = request.form.get('manufacturer', 'Hyundai')
+    selected_model = manufacturers_models[selected_manufacturer]
+
+    base_url = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars"
+    params = {
+        "manufacturer": selected_model["manufacturer"],
+        "model": selected_model["model"],
+        "year": "2022-2024",
+        "km": "-1-50000",
+        "max_items_per_page": 2000,
+        "page": 1
+    }
+    # delete engineval if model is Toyota
+    if (params["manufacturer"] != manufacturers_models["Toyota"]["manufacturer"]):
+        params["engineval"] = "1598-1598"
+    scraper = Yad2CarScraper(base_url, params)
+    scraper.scrape()
+    scraper.save_to_json("yad2_vehicles.json")
+    scraper.save_to_excel("yad2_vehicles.xlsx")
+
     df = pd.read_excel('yad2_vehicles.xlsx')
-    # Parse JSON strings in images_urls column
-    # Clean and parse images_urls
-    def clean_urls(x):
-        try:
-            if isinstance(x, str):
-                # Parse JSON string from Excel
-                urls = json.loads(x)
-                # Ensure it's a list
-                if isinstance(urls, list):
-                    return urls
-            return []
-        except:
-            print(f"Error parsing URLs: {x}")
-            return []
-    from html import escape
-    #df['images_urls'] = df['images_urls'].apply(clean_urls)
-    df['images_urls'] = df['images_urls'].apply(
-        lambda urls: escape(json.dumps(urls)) if isinstance(urls, list) else urls
-    )
 
-
-    # Add debug logging
-    app.logger.debug(f"First row images_urls: {df['images_urls'].iloc[1]}")
-    
     return render_template_string("""
     <html>
         <head>
@@ -166,26 +161,8 @@ def display_data():
             <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
             <script>
                 $(document).ready(function() {
-                    // Setup - add a text input to each footer cell
-                    $('#data-table tfoot th').each(function() {
-                        var title = $(this).text();
-                        $(this).html('<input type="text" placeholder="Search ' + title + '" />');
-                    });
-
-                    var table = $('#data-table').DataTable({
-                        footerCallback: function(row, data, start, end, display) {
-                            // Apply the search
-                            this.api().columns().every(function() {
-                                var that = this;
-                                $('input', this.footer()).on('keyup change clear', function() {
-                                    if (that.search() !== this.value) {
-                                        that.search(this.value).draw();
-                                    }
-                                });
-                            });
-                        },
+                    $('#data-table').DataTable({
                         drawCallback: function(settings) {
-                            // Apply conditional formatting
                             $('#data-table tbody tr').each(function() {
                                 var price = parseInt($(this).find('td:eq(7)').text().replace(' ₪', '').replace(',', ''));
                                 if (price > 150000) {
@@ -206,10 +183,8 @@ def display_data():
                                 }
                             });
 
-                            // Initialize tooltips
                             $('[data-toggle="tooltip"]').tooltip();
 
-                            // Initialize modals
                             $('.info-text, .search-text').on('click', function() {
                                 var content = $(this).data('content');
                                 $('#modalContent').text(content);
@@ -217,49 +192,53 @@ def display_data():
                             });
                             
                             $('.image-urls').on('click', function() {
-    var imagesData = $(this).attr('data-images');
-    var imagesData = $(this).attr('data-images');
-    console.log('Raw data-images:', imagesData); // Debugging step
-                                  
-    try {
-        var images = JSON.parse(imagesData);
-        console.log('Parsed images:', images);
-        
-        if (!Array.isArray(images)) {
-            console.error('Not an array:', images);
-            return;
-        }
-        
-        var modalBody = $('#imageModal .modal-body');
-        modalBody.empty();
-        
-        images.forEach(function(url) {
-            modalBody.append(`
-                <div class="mb-3">
-                    <img src="${url}" class="img-fluid" />
-                </div>
-            `);
-        });
-        
-        $('#imageModal').modal('show');
-    } catch (e) {
-        console.error('JSON parse error:', e);
-    }
-});
-                        
+                                var imagesData = $(this).attr('data-images');
+                                try {
+                                    var images = JSON.parse(imagesData);
+                                    if (!Array.isArray(images)) {
+                                        return;
+                                    }
+                                    var modalBody = $('#imageModal .modal-body');
+                                    modalBody.empty();
+                                    images.forEach(function(url) {
+                                        modalBody.append(`
+                                            <div class="mb-3">
+                                                <img src="${url}" class="img-fluid" />
+                                            </div>
+                                        `);
+                                    });
+                                    $('#imageModal').modal('show');
+                                } catch (e) {
+                                    console.error('JSON parse error:', e);
+                                }
+                            });
                         }
                     });
                 });
             </script>
             <style>
+                body {
+                    margin: 0;
+                    padding: 0;
+                }
+                .container {
+                    margin: 0 auto;
+                    padding: 0;
+                    width: 95%;
+                }
                 tfoot input {
                     width: 100%;
                     padding: 3px;
                     box-sizing: border-box;
                 }
+                table {
+                    width: 100%;
+                    margin: 0;
+                    padding: 0;
+                }
                 .dataTables_wrapper .dataTables_filter {
                     float: right;
-                    text-align: right;
+                    text-align: left;
                 }
                 .dataTables_wrapper .dataTables_length {
                     float: left;
@@ -285,6 +264,16 @@ def display_data():
         <body>
             <div class="container">
                 <h1 class="my-4">Yad2 Vehicles Data</h1>
+                <form method="post">
+                    <div class="form-group">
+                        <label for="manufacturer">Select Manufacturer:</label>
+                        <select class="form-control" id="manufacturer" name="manufacturer" onchange="this.form.submit()">
+                            {% for manufacturer in manufacturers_models.keys() %}
+                            <option value="{{ manufacturer }}" {% if manufacturer == selected_manufacturer %}selected{% endif %}>{{ manufacturer }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </form>
                 <table id="data-table" class="display table table-striped table-bordered">
                     <thead>
                         <tr>
@@ -305,9 +294,8 @@ def display_data():
                         <tr>
                             {% for cell, column in zip(row[1], df.columns) %}
                             {% if column == 'images_urls' %}
-                            <td class="image-urls" data-images="{{ cell }}" style="cursor: pointer;">
-    View Images)</td>
-                                  {% elif column in ['info_text', 'search_text'] %}
+                            <td class="image-urls" data-images="{{ cell }}" style="cursor: pointer;"> View Images</td>
+                            {% elif column in ['info_text', 'search_text'] %}
                             <td class="{{ column }}" data-toggle="tooltip" title="{{ cell }}" data-content="{{ cell }}">...</td>
                             {% else %}
                             <td>{{ cell }}</td>
@@ -319,7 +307,6 @@ def display_data():
                 </table>
             </div>
 
-            <!-- Modal -->
             <div class="modal fade" id="infoModal" tabindex="-1" role="dialog" aria-labelledby="infoModalLabel" aria-hidden="true">
                 <div class="modal-dialog" role="document">
                     <div class="modal-content">
@@ -338,7 +325,6 @@ def display_data():
                 </div>
             </div>
                                   
-            <!-- Modal for images -->
             <div class="modal fade" id="imageModal" tabindex="-1" role="dialog" aria-labelledby="imageModalLabel" aria-hidden="true">
                 <div class="modal-dialog modal-lg" role="document">
                     <div class="modal-content">
@@ -358,26 +344,8 @@ def display_data():
             </div>
         </body>
     </html>
-    """, df=df, zip=zip)
+    """, df=df, manufacturers_models=manufacturers_models, selected_manufacturer=selected_manufacturer, zip=zip)
 
 if __name__ == "__main__":
-    base_url = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars"
-    params = {
-        "manufacturer": 21,
-        "model": 10291,
-        "year": "2022-2024",
-        "engineval": "1598-1598",
-        "km": "-1-50000",
-        "max_items_per_page": 2000,
-        "page": 1
-    }
-
-    scraper = Yad2CarScraper(base_url, params)
-    scraper.scrape()
-    scraper.save_to_json("yad2_vehicles.json")
-    scraper.save_to_excel("yad2_vehicles.xlsx")
     app.logger.setLevel(logging.DEBUG)
     app.run(debug=True)
-
-    
-# Save the JSON data to a file
