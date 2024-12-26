@@ -4,6 +4,17 @@ import json
 import openpyxl
 from flask import Flask, render_template_string, request
 import logging
+import matplotlib.pyplot as plt
+import io
+import base64
+from sklearn.linear_model import LinearRegression
+import numpy as np
+import matplotlib.font_manager as fm
+from bidi.algorithm import get_display
+
+# Use the Agg backend for Matplotlib
+import matplotlib
+matplotlib.use('Agg')
 
 app = Flask(__name__)
 
@@ -125,6 +136,80 @@ class Yad2CarScraper:
 
         print(f"Data has been saved to '{filename}'.")
 
+@app.route('/linear_regression', methods=['POST'])
+def linear_regression():
+    df = pd.read_excel('yad2_vehicles.xlsx')
+    df = df[pd.to_numeric(df['price'], errors='coerce').notnull()]
+    df.loc[:, 'price'] = df['price'].astype(int)
+    df = df[df['price'] != "N/A"]
+
+    # Filter according to the selected status
+    filtered_df = df.copy()
+    for column in request.form:
+        if column in df.columns:
+            filtered_df = filtered_df[filtered_df[column].astype(str).str.contains(request.form[column], na=False, case=False, regex=False)]
+
+    if filtered_df.empty:
+        return render_template_string("""
+        <html>
+            <head>
+                <title>Linear Regression</title>
+                <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+            </head>
+            <body>
+                <div class="container">
+                    <h1 class="my-4">Linear Regression: Price vs Kilometers</h1>
+                    <p>No data available for the selected filters.</p>
+                    <button class="btn btn-primary mt-4" onclick="window.close()">Close</button>
+                </div>
+            </body>
+        </html>
+        """)
+
+    X = filtered_df[['price']]
+    y = filtered_df['kilometers']
+    model = LinearRegression()
+    model.fit(X, y)
+    y_pred = model.predict(X)
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(filtered_df['price'], filtered_df['kilometers'], color='blue', label='Data points')
+    plt.plot(filtered_df['price'], y_pred, color='red', linewidth=2, label='Linear regression line')
+    plt.xlabel('Price')
+    plt.ylabel('Kilometers')
+    plt.title('Linear Regression: Kilometers vs Price')
+    plt.legend()
+
+    # Set font properties for Hebrew characters
+    prop = fm.FontProperties(family='Arial')
+
+    for i, txt in enumerate(filtered_df['submodel']):
+        mixed_text = f"{txt}, {filtered_df['city'].iloc[i]}, {filtered_df['year'].iloc[i]}"
+        display_text = get_display(mixed_text)  # Correct the direction of mixed Hebrew and English text
+        plt.annotate(display_text, (filtered_df['price'].iloc[i], filtered_df['kilometers'].iloc[i]), fontproperties=prop)
+
+    img = io.BytesIO()
+    plt.savefig(img, format='png')
+    plt.close()  # Close the plot to avoid GUI issues
+    img.seek(0)
+    plot_url = base64.b64encode(img.getvalue()).decode()
+
+    return render_template_string("""
+    <html>
+        <head>
+            <title>Linear Regression</title>
+            <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+        </head>
+        <body>
+            <div class="container">
+                <h1 class="my-4">Linear Regression: Kilometers vs Price</h1>
+                <img src="data:image/png;base64,{{ plot_url }}" class="img-fluid" />
+                <button class="btn btn-primary mt-4" onclick="window.close()">Close</button>
+            </div>
+        </body>
+    </html>
+    """, plot_url=plot_url)
+
 @app.route('/', methods=['GET', 'POST'])
 def display_data():
     selected_manufacturer = request.form.get('manufacturer', 'Hyundai')
@@ -135,7 +220,7 @@ def display_data():
         "manufacturer": selected_model["manufacturer"],
         "model": selected_model["model"],
         "year": "2022-2024",
-        "km": "-1-50000",
+        "km": "-1-50001",
         "max_items_per_page": 2000,
         "page": 1
     }
@@ -161,7 +246,23 @@ def display_data():
             <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
             <script>
                 $(document).ready(function() {
-                    $('#data-table').DataTable({
+                        // Setup - add a text input to each footer cell
+                        $('#data-table tfoot th').each(function() {
+                            var title = $(this).text();
+                            $(this).html('<input type="text" placeholder="Search ' + title + '" />');
+                        });
+                        var table = $('#data-table').DataTable({
+                            footerCallback: function(row, data, start, end, display) {
+                                // Apply the search
+                                this.api().columns().every(function() {
+                                    var that = this;
+                                    $('input', this.footer()).on('keyup change clear', function() {
+                                        if (that.search() !== this.value) {
+                                            that.search(this.value).draw();
+                                        }
+                                    });
+                                });
+                            },
                         drawCallback: function(settings) {
                             $('#data-table tbody tr').each(function() {
                                 var price = parseInt($(this).find('td:eq(7)').text().replace(' ₪', '').replace(',', ''));
@@ -274,6 +375,7 @@ def display_data():
                         </select>
                     </div>
                 </form>
+                <button class="btn btn-info my-4" id="linearRegressionBtn">Show Linear Regression</button>
                 <table id="data-table" class="display table table-striped table-bordered">
                     <thead>
                         <tr>
@@ -342,6 +444,29 @@ def display_data():
                     </div>
                 </div>
             </div>
+
+            <script>
+                document.getElementById('linearRegressionBtn').addEventListener('click', function() {
+                    var formData = new FormData();
+                    $('#data-table tfoot input').each(function() {
+                        var column = $(this).attr('placeholder').replace('Search ', '');
+                        var value = $(this).val();
+                        if (value) {
+                            formData.append(column, value);
+                        }
+                    });
+
+                    fetch('/linear_regression', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.text())
+                    .then(html => {
+                        var newWindow = window.open();
+                        newWindow.document.write(html);
+                    });
+                });
+            </script>
         </body>
     </html>
     """, df=df, manufacturers_models=manufacturers_models, selected_manufacturer=selected_manufacturer, zip=zip)
